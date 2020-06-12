@@ -16,6 +16,7 @@ type announceFunc func(net.IP) dropReason
 type arpResponder struct {
 	logger       log.Logger
 	intf         string
+	intfAddrs    []net.Addr
 	hardwareAddr net.HardwareAddr
 	conn         *arp.Client
 	closed       chan struct{}
@@ -27,10 +28,16 @@ func newARPResponder(logger log.Logger, ifi *net.Interface, ann announceFunc) (*
 	if err != nil {
 		return nil, fmt.Errorf("creating ARP responder for %q: %s", ifi.Name, err)
 	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		logger.Log("op", "getAddresses", "error", err, "msg", "couldn't get addresses for interface")
+		return nil, err
+	}
 
 	ret := &arpResponder{
 		logger:       logger,
 		intf:         ifi.Name,
+		intfAddrs:    addrs,
 		hardwareAddr: ifi.HardwareAddr,
 		conn:         client,
 		closed:       make(chan struct{}),
@@ -96,6 +103,26 @@ func (a *arpResponder) processRequest() dropReason {
 	// Ignore ARP requests that the announcer tells us to ignore.
 	if reason := a.announce(pkt.TargetIP); reason != dropReasonNone {
 		return reason
+	}
+
+	// Ignore ARP requests that the request IP not match subnets in this interface
+	match := false
+	for _, addr := range a.intfAddrs {
+		ipaddr, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if ipaddr.IP.To4() == nil || ipaddr.IP.IsLinkLocalUnicast() {
+			continue
+		}
+		if ipaddr.Contains(pkt.SenderIP) {
+			match = true
+			break
+		}
+	}
+	if !match {
+		a.logger.Log("op", "arpReply", "interface", a.intf, "ip", pkt.TargetIP, "senderIP", pkt.SenderIP, "msg", "senderIP not match interface's subnet")
+		return dropReasonNotMatchSubnet
 	}
 
 	stats.GotRequest(pkt.TargetIP.String())

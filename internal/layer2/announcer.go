@@ -256,4 +256,5 @@ const (
 	dropReasonNoSourceLL
 	dropReasonEthernetDestination
 	dropReasonAnnounceIP
+	dropReasonNotMatchSubnet
 )
